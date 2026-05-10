@@ -29,7 +29,8 @@ class Dealer(Base):
     region = Column(String(50))
     dealer_tier_id = Column(Integer, ForeignKey("dealer_tiers.id"))
     credit_limit = Column(DECIMAL(12,2), default=0)
-    status = Column(String(20), default="active")
+    status = Column(String(20), default="active")  # active/disabled/deleted
+    deleted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

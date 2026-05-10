@@ -1,7 +1,7 @@
 # app/api/admin_products.py
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
 from datetime import datetime
@@ -9,7 +9,8 @@ from typing import Optional
 from app.core.database import get_db
 from app.core.security import get_current_admin
 from app.models.user import Admin
-from app.models.product import Product, ProductPrice, Inventory, Warehouse, Category, DealerPrice
+from app.models.product import Product, ProductPrice, Inventory, Warehouse, Category
+from app.models.order import Order, OrderItem, CartItem
 
 router = APIRouter()
 
@@ -45,7 +46,7 @@ class ProductResponse(BaseModel):
     category_name: Optional[str]
     image_url: Optional[str]
     description: Optional[str]
-    is_active: bool
+    status: str
     list_price: float
     inventory: list[InventoryResponse]
     created_at: datetime
@@ -62,7 +63,7 @@ class ProductListItem(BaseModel):
     unit: str
     category_name: Optional[str]
     list_price: float
-    is_active: bool
+    status: str
     total_stock: int
 
     class Config:
@@ -99,6 +100,10 @@ class UpdateProductRequest(BaseModel):
     description: Optional[str] = None
 
 
+class UpdateStatusRequest(BaseModel):
+    status: str
+
+
 class UpdatePriceRequest(BaseModel):
     list_price: float
 
@@ -106,6 +111,14 @@ class UpdatePriceRequest(BaseModel):
 class UpdateInventoryRequest(BaseModel):
     warehouse_id: int
     quantity: int
+
+
+STATUS_LABELS = {
+    "active": "上架",
+    "inactive": "下架",
+    "disabled": "停用",
+    "deleted": "已删除",
+}
 
 
 @router.get("/categories", response_model=list[CategoryResponse])
@@ -124,7 +137,7 @@ async def admin_list_products(
     page_size: int = Query(20, ge=1, le=100),
     search: Optional[str] = None,
     category_id: Optional[int] = None,
-    is_active: Optional[bool] = None,
+    status: Optional[str] = None,
     current_admin: Admin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -132,7 +145,7 @@ async def admin_list_products(
         selectinload(Product.category),
         selectinload(Product.inventory),
         selectinload(Product.price),
-    )
+    ).where(Product.deleted_at.is_(None))
 
     if search:
         query = query.where(
@@ -140,8 +153,8 @@ async def admin_list_products(
         )
     if category_id:
         query = query.where(Product.category_id == category_id)
-    if is_active is not None:
-        query = query.where(Product.is_active == is_active)
+    if status:
+        query = query.where(Product.status == status)
 
     query = query.order_by(Product.created_at.desc())
 
@@ -164,7 +177,7 @@ async def admin_list_products(
             unit=p.unit,
             category_name=p.category.name if p.category else None,
             list_price=float(p.price.list_price) if p.price else 0.0,
-            is_active=p.is_active,
+            status=p.status,
             total_stock=total_stock,
         ))
 
@@ -185,7 +198,7 @@ async def admin_get_product(
             selectinload(Product.inventory).selectinload(Inventory.warehouse),
             selectinload(Product.price),
         )
-        .where(Product.id == product_id)
+        .where(Product.id == product_id, Product.deleted_at.is_(None))
     )
     product = result.scalar_one_or_none()
     if not product:
@@ -213,7 +226,7 @@ async def admin_get_product(
         category_name=product.category.name if product.category else None,
         image_url=product.image_url,
         description=product.description,
-        is_active=product.is_active,
+        status=product.status,
         list_price=float(product.price.list_price) if product.price else 0.0,
         inventory=inventory,
         created_at=product.created_at,
@@ -226,7 +239,9 @@ async def admin_create_product(
     current_admin: Admin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    existing = await db.execute(select(Product).where(Product.sku == req.sku))
+    existing = await db.execute(
+        select(Product).where(Product.sku == req.sku, Product.deleted_at.is_(None))
+    )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="SKU已存在")
 
@@ -239,7 +254,7 @@ async def admin_create_product(
         category_id=req.category_id,
         image_url=req.image_url,
         description=req.description,
-        is_active=True,
+        status="disabled",
     )
     db.add(product)
     await db.flush()
@@ -265,10 +280,15 @@ async def admin_update_product(
     current_admin: Admin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Product).where(Product.id == product_id))
+    result = await db.execute(
+        select(Product).where(Product.id == product_id, Product.deleted_at.is_(None))
+    )
     product = result.scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=404, detail="商品不存在")
+
+    if product.status == "disabled":
+        raise HTTPException(status_code=400, detail="停用状态的商品不可编辑")
 
     if req.name is not None:
         product.name = req.name
@@ -298,8 +318,15 @@ async def admin_update_price(
     current_admin: Admin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(ProductPrice).where(ProductPrice.product_id == product_id))
-    price = result.scalar_one_or_none()
+    result = await db.execute(
+        select(Product).where(Product.id == product_id, Product.deleted_at.is_(None))
+    )
+    product = result.scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="商品不存在")
+
+    price_result = await db.execute(select(ProductPrice).where(ProductPrice.product_id == product_id))
+    price = price_result.scalar_one_or_none()
 
     if price:
         price.list_price = req.list_price
@@ -320,12 +347,18 @@ async def admin_update_inventory(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
+        select(Product).where(Product.id == product_id, Product.deleted_at.is_(None))
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="商品不存在")
+
+    inv_result = await db.execute(
         select(Inventory).where(
             Inventory.product_id == product_id,
             Inventory.warehouse_id == req.warehouse_id,
         )
     )
-    inv = result.scalar_one_or_none()
+    inv = inv_result.scalar_one_or_none()
     if not inv:
         raise HTTPException(status_code=404, detail="库存记录不存在")
 
@@ -336,36 +369,114 @@ async def admin_update_inventory(
     return {"ok": True}
 
 
-@router.post("/products/{product_id}/toggle-active")
-async def admin_toggle_product_active(
+@router.put("/products/{product_id}/status")
+async def admin_update_status(
     product_id: int,
+    req: UpdateStatusRequest,
     current_admin: Admin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Product).where(Product.id == product_id))
+    result = await db.execute(
+        select(Product).where(Product.id == product_id, Product.deleted_at.is_(None))
+    )
     product = result.scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=404, detail="商品不存在")
 
-    product.is_active = not product.is_active
+    new_status = req.status
+    if new_status not in ("active", "inactive", "disabled"):
+        raise HTTPException(status_code=400, detail="无效的状态")
+
+    if new_status == "disabled":
+        unfinished_result = await db.execute(
+            select(func.count(OrderItem.id))
+            .join(Order)
+            .where(
+                OrderItem.product_id == product_id,
+                Order.status.in_(["pending", "confirmed", "processing"]),
+            )
+        )
+        unfinished_count = unfinished_result.scalar() or 0
+        if unfinished_count > 0:
+            raise HTTPException(status_code=400, detail="存在未完成订单引用该商品，无法停用")
+
+    product.status = new_status
     product.updated_at = datetime.utcnow()
     await db.commit()
 
-    return {"ok": True, "is_active": product.is_active}
+    return {"ok": True, "status": product.status}
 
 
-@router.post("/products/batch-toggle-active")
-async def admin_batch_toggle_active(
-    product_ids: list[int],
-    is_active: bool,
+@router.delete("/products/{product_id}")
+async def admin_delete_product(
+    product_id: int,
     current_admin: Admin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Product).where(Product.id.in_(product_ids)))
+    result = await db.execute(
+        select(Product).where(Product.id == product_id, Product.deleted_at.is_(None))
+    )
+    product = result.scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="商品不存在")
+
+    if product.status != "disabled":
+        raise HTTPException(status_code=400, detail="请先停用商品再删除")
+
+    historical_result = await db.execute(
+        select(func.count(OrderItem.id))
+        .join(Order)
+        .where(
+            OrderItem.product_id == product_id,
+            Order.status.in_(["completed", "cancelled", "rejected"]),
+        )
+    )
+    historical_count = historical_result.scalar() or 0
+    if historical_count > 0:
+        pass
+
+    await db.execute(
+        delete(CartItem).where(CartItem.product_id == product_id)
+    )
+
+    product.status = "deleted"
+    product.deleted_at = datetime.utcnow()
+    await db.commit()
+
+    return {"ok": True}
+
+
+@router.post("/products/batch-status")
+async def admin_batch_update_status(
+    product_ids: list[int],
+    status: str,
+    current_admin: Admin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if status not in ("active", "inactive", "disabled"):
+        raise HTTPException(status_code=400, detail="无效的状态")
+
+    if status == "disabled":
+        for pid in product_ids:
+            unfinished_result = await db.execute(
+                select(func.count(OrderItem.id))
+                .join(Order)
+                .where(
+                    OrderItem.product_id == pid,
+                    Order.status.in_(["pending", "confirmed", "processing"]),
+                )
+            )
+            unfinished_count = unfinished_result.scalar() or 0
+            if unfinished_count > 0:
+                raise HTTPException(status_code=400, detail=f"商品 {pid} 存在未完成订单，无法停用")
+
+    result = await db.execute(
+        select(Product).where(Product.id.in_(product_ids), Product.deleted_at.is_(None))
+    )
     products = result.scalars().all()
 
     for p in products:
-        p.is_active = is_active
+        p.status = status
         p.updated_at = datetime.utcnow()
 
     await db.commit()

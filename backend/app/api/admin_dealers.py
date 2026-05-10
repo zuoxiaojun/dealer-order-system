@@ -9,6 +9,7 @@ from typing import Optional
 from app.core.database import get_db
 from app.core.security import get_current_admin, get_password_hash
 from app.models.user import Admin, Dealer, User, DealerTier
+from app.models.order import Order
 
 router = APIRouter()
 
@@ -93,7 +94,10 @@ class UpdateDealerRequest(BaseModel):
     region: Optional[str] = None
     dealer_tier_id: Optional[int] = None
     credit_limit: Optional[float] = None
-    status: Optional[str] = None
+
+
+class UpdateStatusRequest(BaseModel):
+    status: str
 
 
 class CreateDealerUserRequest(BaseModel):
@@ -131,7 +135,7 @@ async def admin_list_dealers(
     query = select(Dealer).options(
         selectinload(Dealer.dealer_tier),
         selectinload(Dealer.users),
-    )
+    ).where(Dealer.deleted_at.is_(None))
 
     if search:
         query = query.where(Dealer.name.ilike(f"%{search}%"))
@@ -258,6 +262,91 @@ async def admin_update_dealer(
         dealer.status = req.status
 
     dealer.updated_at = datetime.utcnow()
+    await db.commit()
+
+    return {"ok": True}
+
+
+@router.put("/dealers/{dealer_id}/status")
+async def admin_update_dealer_status(
+    dealer_id: int,
+    req: UpdateStatusRequest,
+    current_admin: Admin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Dealer).where(Dealer.id == dealer_id, Dealer.deleted_at.is_(None))
+    )
+    dealer = result.scalar_one_or_none()
+    if not dealer:
+        raise HTTPException(status_code=404, detail="经销商不存在")
+
+    new_status = req.status
+    if new_status not in ("active", "disabled"):
+        raise HTTPException(status_code=400, detail="无效的状态")
+
+    if new_status == "disabled":
+        unfinished_result = await db.execute(
+            select(func.count())
+            .select_from(Order)
+            .where(
+                Order.dealer_id == dealer_id,
+                Order.status.in_(["pending", "confirmed", "processing"]),
+            )
+        )
+        unfinished_count = unfinished_result.scalar() or 0
+        if unfinished_count > 0:
+            raise HTTPException(status_code=400, detail="该经销商存在未完成订单，无法停用")
+
+    dealer.status = new_status
+    dealer.updated_at = datetime.utcnow()
+    await db.commit()
+
+    for user in dealer.users:
+        user.status = "disabled" if new_status == "disabled" else "active"
+        user.updated_at = datetime.utcnow()
+
+    await db.commit()
+
+    return {"ok": True, "status": dealer.status}
+
+
+@router.delete("/dealers/{dealer_id}")
+async def admin_delete_dealer(
+    dealer_id: int,
+    current_admin: Admin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Dealer).where(Dealer.id == dealer_id, Dealer.deleted_at.is_(None))
+    )
+    dealer = result.scalar_one_or_none()
+    if not dealer:
+        raise HTTPException(status_code=404, detail="经销商不存在")
+
+    if dealer.status != "disabled":
+        raise HTTPException(status_code=400, detail="请先停用经销商再删除")
+
+    historical_result = await db.execute(
+        select(func.count())
+        .select_from(Order)
+        .where(
+            Order.dealer_id == dealer_id,
+            Order.status.in_(["completed", "cancelled", "rejected"]),
+        )
+    )
+    historical_count = historical_result.scalar() or 0
+    if historical_count > 0:
+        raise HTTPException(status_code=400, detail="该经销商存在历史订单，不可删除，仅可停用")
+
+    for user in dealer.users:
+        user.status = "disabled"
+        user.updated_at = datetime.utcnow()
+
+    dealer.status = "deleted"
+    dealer.deleted_at = datetime.utcnow()
+    dealer.updated_at = datetime.utcnow()
+
     await db.commit()
 
     return {"ok": True}

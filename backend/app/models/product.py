@@ -27,7 +27,8 @@ class Product(Base):
     min_order_qty = Column(Integer, default=1)
     image_url = Column(String(500))
     description = Column(Text)
-    is_active = Column(Boolean, default=True)
+    status = Column(String(20), default="disabled")  # active/inactive/disabled/deleted
+    deleted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

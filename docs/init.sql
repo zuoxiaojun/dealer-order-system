@@ -8,16 +8,34 @@ CREATE TABLE IF NOT EXISTS dealer_tiers (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS dealers (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    contact_name VARCHAR(100),
+    contact_phone VARCHAR(20),
+    contact_email VARCHAR(100),
+    address VARCHAR(500),
+    region VARCHAR(50),
+    dealer_tier_id INT REFERENCES dealer_tiers(id),
+    credit_limit DECIMAL(12,2) DEFAULT 0,
+    status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active','disabled','deleted')),
+    deleted_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     username VARCHAR(50) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
     full_name VARCHAR(100) NOT NULL,
+    dealer_id INT REFERENCES dealers(id),
     dealer_tier_id INT REFERENCES dealer_tiers(id),
     company_name VARCHAR(200),
     phone VARCHAR(20),
     email VARCHAR(100),
-    status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active','frozen')),
+    role VARCHAR(20) DEFAULT 'dealer_user',
+    status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active','disabled')),
     last_login_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -50,7 +68,8 @@ CREATE TABLE IF NOT EXISTS products (
     min_order_qty INT DEFAULT 1,
     image_url VARCHAR(500),
     description TEXT,
-    is_active BOOLEAN DEFAULT TRUE,
+    status VARCHAR(20) DEFAULT 'disabled' CHECK (status IN ('active','inactive','disabled','deleted')),
+    deleted_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -191,7 +210,8 @@ CREATE TABLE IF NOT EXISTS reconciliation (
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id);
 CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
-CREATE INDEX IF NOT EXISTS idx_products_active ON products(is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_products_status ON products(status) WHERE status != 'deleted';
+CREATE INDEX IF NOT EXISTS idx_dealers_status ON dealers(status) WHERE status != 'deleted';
 CREATE INDEX IF NOT EXISTS idx_inventory_product ON inventory(product_id);
 CREATE INDEX IF NOT EXISTS idx_inventory_warehouse ON inventory(warehouse_id);
 CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
@@ -232,10 +252,10 @@ INSERT INTO dealers (id, name, contact_name, contact_phone, region, dealer_tier_
 ON CONFLICT DO NOTHING;
 
 -- 再创建经销商用户（dealer_id 关联到 dealers 表）
-INSERT INTO users (id, username, password_hash, full_name, dealer_id, dealer_tier_id, company_name, phone) VALUES
-    (1, 'dealer001', '$2b$12$NHnq.lgTA/ueoGR.WqbAKumH3IFtJm.CsHh90OHicSynWenBE1Y6C', '张经理', 1, 1, '华强北电子有限公司', '13800138001'),
-    (2, 'dealer002', '$2b$12$NHnq.lgTA/ueoGR.WqbAKumH3IFtJm.CsHh90OHicSynWenBE1Y6C', '李总监', 2, 2, '深圳科创贸易商行', '13800138002'),
-    (3, 'dealer003', '$2b$12$NHnq.lgTA/ueoGR.WqbAKumH3IFtJm.CsHh90OHicSynWenBE1Y6C', '王老板', 3, 3, '广州电子批发市场', '13800138003')
+INSERT INTO users (id, username, password_hash, full_name, dealer_id, dealer_tier_id, company_name, phone, status) VALUES
+    (1, 'dealer001', '$2b$12$NHnq.lgTA/ueoGR.WqbAKumH3IFtJm.CsHh90OHicSynWenBE1Y6C', '张经理', 1, 1, '华强北电子有限公司', '13800138001', 'active'),
+    (2, 'dealer002', '$2b$12$NHnq.lgTA/ueoGR.WqbAKumH3IFtJm.CsHh90OHicSynWenBE1Y6C', '李总监', 2, 2, '深圳科创贸易商行', '13800138002', 'active'),
+    (3, 'dealer003', '$2b$12$NHnq.lgTA/ueoGR.WqbAKumH3IFtJm.CsHh90OHicSynWenBE1Y6C', '王老板', 3, 3, '广州电子批发市场', '13800138003', 'active')
 ON CONFLICT DO NOTHING;
 
 INSERT INTO products (category_id, name, sku, spec, unit, min_order_qty, image_url) VALUES
