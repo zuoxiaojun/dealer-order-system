@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv310/
+
+# Node
+node_modules/
+npm-debug.log
+.env.local
+.env.production
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Mac
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Project specific
+.env
+*.db
+*.log

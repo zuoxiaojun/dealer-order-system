@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read",
+      "Edit",
+      "Write"
+    ],
+    "deny": [
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf /)",
+      "Bash(:(){:|:&};:)",
+      "Bash(dd if=*)",
+      "Bash(mkfs.*)",
+      "Bash(mount.*--bind)"
+    ]
+  }
+}

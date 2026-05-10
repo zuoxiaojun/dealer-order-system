@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(rm -rf /home)",
+      "Bash(rm -rf /Users)",
+      "Bash(rm -rf /var)",
+      "Bash(rm -rf /etc)",
+      "Bash(rm -rf /*)",
+      "Bash(git reset --hard)",
+      "Bash(git push --force)",
+      "Bash(docker system prune)",
+      "Bash(dropdb)",
+      "Bash(destroy)",
+      "Bash(rm -rf .git)"
+    ],
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "mcp__chrome-devtools__list_network_requests"
+    ]
+  }
+}
